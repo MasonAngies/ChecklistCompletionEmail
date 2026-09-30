@@ -111,24 +111,37 @@ def test_build_only() -> str:
 
 @app.function(image=image, secrets=[secret], timeout=120)
 def show_config() -> str:
-    """Who gets the report, read from the deployed secret — sends nothing:
+    """Who tomorrow's report would go to — reads the directory, sends nothing:
 
         ./.venv/bin/modal run modal_app.py::show_config
+
+    Worth having because the list is no longer written down anywhere: it is
+    derived from the Store Directory at send time, so this is the only way to
+    see it without waiting for 7:29.
     """
     _app_path()
     import os
 
+    from src.checklists import KintoneClient, build_roster, load_stores
     from src.graph_mailer import parse_recipients
 
     dry = os.environ.get("CHECKLIST_DRY_RUN", "1").strip() != "0"
-    to = parse_recipients("CHECKLIST_RECIPIENTS")
-    cc = parse_recipients("CHECKLIST_CC")
     alert = parse_recipients("ALERT_RECIPIENTS", "TEST_RECIPIENT")
-    lines = [
-        f"mode   : {'DRY RUN (sends to the alert list only)' if dry else 'LIVE'}",
-        f"to     : {', '.join(to) or '(empty — a live run would refuse to send)'}",
-        f"cc     : {', '.join(cc) or '(none)'}",
-        f"alerts : {', '.join(alert) or '(none)'}",
-    ]
+    lines = [f"mode     : {'DRY RUN (sends to the alert list only)' if dry else 'LIVE'}"]
+    try:
+        roster = build_roster(load_stores(KintoneClient()))
+        lines += [
+            f"to       : {', '.join(roster.to)}",
+            f"cc       : {', '.join(roster.cc) or '(none)'}",
+        ]
+        if roster.rejected:
+            lines.append(f"SKIPPED  : {', '.join(roster.rejected)} (bad address/domain)")
+        if roster.missing:
+            lines.append(f"NO DM    : {', '.join(roster.missing)}")
+    except Exception as exc:  # noqa: BLE001
+        fallback = parse_recipients("CHECKLIST_RECIPIENTS")
+        lines += [f"to       : !! directory unreadable ({type(exc).__name__}: {exc})",
+                  f"fallback : {', '.join(fallback) or '(empty)'}"]
+    lines.append(f"alerts   : {', '.join(alert) or '(none)'}")
     print("\n".join(lines))
     return "\n".join(lines)

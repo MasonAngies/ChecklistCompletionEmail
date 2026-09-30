@@ -57,6 +57,9 @@ _F_DIR_NUMBER = "Store_Number"
 _F_DIR_NAME = "Store_Name"
 _F_DIR_DISTRICT = "District"
 _F_DIR_DM = "District_Manager_Name"
+_F_DIR_DM_EMAIL = "District_Manager_Email"
+_F_DIR_DIRECTOR = "Director_Name"
+_F_DIR_DIRECTOR_EMAIL = "Director_Email"
 _F_DIR_STATUS = "Active_Status"                   # Active/Opening/Closed/Inactive
 
 # Shared by every checklist app.
@@ -122,6 +125,9 @@ class Store:
     name: str
     district: str
     dm: str
+    dm_email: str = ""
+    director: str = ""
+    director_email: str = ""
 
 
 @dataclass
@@ -181,6 +187,70 @@ def cleaning_week_for(business_date: date) -> Optional[Tuple[date, date]]:
     return business_date - timedelta(days=6), business_date
 
 
+# --- who gets the email --------------------------------------------------------
+
+# Every address is checked against this list before it is mailed. The directory
+# is edited by hand, and a typo'd domain would send a store-performance report
+# to a stranger; a typo inside an allowed domain merely bounces.
+_DEFAULT_DOMAINS = "angies.com,angiesprime.com"
+_EMAIL_RE = re.compile(r"^[^@\s,;]+@[^@\s,;]+\.[a-z]{2,}$", re.I)
+
+
+@dataclass
+class Roster:
+    """Who the report is addressed to, rebuilt from the directory every run."""
+    to: List[str]                                  # district managers
+    cc: List[str]                                  # directors not already in `to`
+    rejected: List[str] = dc_field(default_factory=list)
+    missing: List[str] = dc_field(default_factory=list)   # districts with no DM email
+
+
+def _allowed_domains() -> set:
+    raw = os.environ.get("CHECKLIST_ALLOWED_DOMAINS") or _DEFAULT_DOMAINS
+    return {d.strip().lower().lstrip("@") for d in raw.split(",") if d.strip()}
+
+
+def _clean_email(raw: str, allowed: set, rejected: List[str]) -> str:
+    """A mailable address, or "" — anything odd is recorded, never sent to."""
+    addr = (raw or "").strip().strip("<>").lower()
+    if not addr:
+        return ""
+    if not _EMAIL_RE.match(addr) or addr.rsplit("@", 1)[1] not in allowed:
+        rejected.append(raw.strip())
+        return ""
+    return addr
+
+
+def build_roster(stores: List[Store]) -> Roster:
+    """District managers of Active stores, with their directors on CC.
+
+    Read off the same directory rows the report was built from, so the list is
+    re-derived every morning rather than drifting in a secret. A DM who is also
+    a director (Texas today) is addressed once, in `to`.
+    """
+    allowed = _allowed_domains()
+    rejected: List[str] = []
+    to: List[str] = []
+    cc: List[str] = []
+    missing: List[str] = []
+
+    for store in stores:
+        addr = _clean_email(store.dm_email, allowed, rejected)
+        if addr:
+            if addr not in to:
+                to.append(addr)
+        elif store.district not in missing:
+            missing.append(store.district)
+    for store in stores:
+        addr = _clean_email(store.director_email, allowed, rejected)
+        if addr and addr not in to and addr not in cc:
+            cc.append(addr)
+
+    seen = set()
+    rejected = [r for r in rejected if not (r.lower() in seen or seen.add(r.lower()))]
+    return Roster(to=sorted(to), cc=sorted(cc), rejected=rejected, missing=missing)
+
+
 # --- store matching ------------------------------------------------------------
 
 _FIVE_DIGITS = re.compile(r"(?<!\d)(\d{5})(?!\d)")
@@ -227,6 +297,9 @@ def load_stores(client: KintoneClient) -> List[Store]:
             name=text(rec, _F_DIR_NAME),
             district=text(rec, _F_DIR_DISTRICT) or "Other",
             dm=text(rec, _F_DIR_DM),
+            dm_email=text(rec, _F_DIR_DM_EMAIL),
+            director=text(rec, _F_DIR_DIRECTOR),
+            director_email=text(rec, _F_DIR_DIRECTOR_EMAIL),
         ))
     if not stores:
         raise KintoneApiError("Store Directory returned no Active stores.")

@@ -33,6 +33,12 @@ removing it is a two-sided change: edit there AND redeploy that app.
 - **One checklist app down ≠ a row of misses.** Its column shows n/a with a banner
   and Mason gets an alert. Only the Store Directory failing stops the run.
 - **Cleaning column is Monday-only** (keyed off a Sunday business date).
+- **The recipient list is not written down** — it is rebuilt from the Store
+  Directory every run (DMs to, directors cc). Editing `CHECKLIST_RECIPIENTS`
+  changes only the fallback. To change who gets it, change the directory, or
+  check what it will do with `modal run modal_app.py::show_config`.
+- **The domain allowlist is the last guard before a real send.** Don't loosen it
+  to make one odd address work; fix the address in the directory instead.
 - **Opening compliance is genuinely low** (~9–10 of 26 stores a day in Sept 2026);
   that is the data, not a bug.
 - After any code change: `./.venv/bin/modal deploy modal_app.py`, then

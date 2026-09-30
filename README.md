@@ -32,6 +32,25 @@ as a percentage and is not part of Done.
 - **Cleaning:** every store record created in the week, photo fields unioned,
   divided by the number of photo fields on the form (47 today, read live).
 
+## Who gets it
+
+Rebuilt from the Store Directory on every run, so a DM change reaches the email
+the next morning without anyone editing a secret:
+
+- **To:** the `District Manager Email` of every Active store, deduplicated.
+- **CC:** the `Director Email` of those stores, minus anyone already on the To
+  line (Texas' DM is also a director).
+
+Every address must parse and sit on an allowed domain — `angies.com` or
+`angiesprime.com`, overridable with `CHECKLIST_ALLOWED_DOMAINS`. Anything else is
+skipped and Mason gets an alert naming it; the rest of the list still goes out.
+A district with no DM email on file is alerted the same way. `CHECKLIST_RECIPIENTS`
+is now only the fallback for the case where the directory holds no usable address
+at all.
+
+Check the current list any time with
+`./.venv/bin/modal run modal_app.py::show_config` — it sends nothing.
+
 ## Running it
 
 ```
@@ -54,7 +73,7 @@ That call is wrapped so a checklist failure can never take down the punch report
 
 - Code change: `./.venv/bin/modal deploy modal_app.py` (git push does not deploy).
 - Who gets it: `./.venv/bin/modal run modal_app.py::show_config`.
-- Go live: set `CHECKLIST_RECIPIENTS` and `CHECKLIST_DRY_RUN=0` in the secret.
+- Go live: set `CHECKLIST_DRY_RUN=0` in the secret.
 - Resend a date: `./.venv/bin/modal run modal_app.py::rerun --business-date 2026-09-27`.
 
 ## Branding

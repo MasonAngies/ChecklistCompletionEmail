@@ -31,7 +31,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src import email_body  # noqa: E402
-from src.checklists import az_today, build_report  # noqa: E402
+from src.checklists import az_today, build_report, build_roster  # noqa: E402
 from src.graph_mailer import parse_recipients, send_email  # noqa: E402
 
 LOGO = ROOT / "assets" / "logo_navy.png"
@@ -69,6 +69,56 @@ def _send_alert(title: str, lines: list) -> None:
         print(f"  alert emailed to {', '.join(to)}")
     except Exception as exc:  # noqa: BLE001
         print(f"  !! alert email failed: {type(exc).__name__}: {exc}")
+
+
+def _live_recipients(report) -> tuple:
+    """Re-derive the distribution list from the Store Directory, every run.
+
+    The directory is the DMs' own source of truth, so a new district manager is
+    picked up the morning after the directory is updated rather than whenever
+    someone remembers to edit the secret.
+
+    The guard, because this is the one place a directory typo could mail a
+    stranger: every address must parse and sit on an allowed domain
+    (CHECKLIST_ALLOWED_DOMAINS, defaulting to the two company domains). An
+    address that fails is skipped and reported, never mailed.
+
+    CHECKLIST_RECIPIENTS in the secret is now only a fallback, used if the
+    directory holds no usable DM address at all. A DM roster that simply differs
+    from it is not an error — that is the directory doing its job — so it is
+    logged rather than alerted on, or the alert would fire every morning.
+    """
+    roster = build_roster(report.stores)
+
+    if not roster.to:
+        # The directory read succeeded but holds no usable DM address. Falling
+        # back beats sending nothing, and beats guessing.
+        fallback = parse_recipients("CHECKLIST_RECIPIENTS")
+        _send_alert("no district manager emails in the directory",
+                    ["The Store Directory returned no DM address on an allowed domain.",
+                     *(f"Rejected: {r}" for r in roster.rejected),
+                     f"Fell back to CHECKLIST_RECIPIENTS: {', '.join(fallback) or '(empty)'}"])
+        if not fallback:
+            raise SystemExit("No recipients — refusing a live send.")
+        return fallback, parse_recipients("CHECKLIST_CC")
+
+    problems = []
+    if roster.rejected:
+        problems.append("Skipped — not a valid address on an allowed domain: "
+                        + ", ".join(roster.rejected))
+    if roster.missing:
+        problems.append("Districts with no DM email on file: " + ", ".join(roster.missing))
+    if problems:
+        for note in problems:
+            print(f"  !! {note}")
+        _send_alert("check the Store Directory", [
+            *problems,
+            f"The report still went to: {', '.join(roster.to)}",
+            "Those DMs did not get it. Fix the address in the Store Directory (app 897).",
+        ])
+
+    print(f"  roster from the directory: {len(roster.to)} DMs, {len(roster.cc)} on CC")
+    return roster.to, roster.cc
 
 
 def run(
@@ -126,12 +176,7 @@ def run(
         to = _alert_recipients()
         subject = f"[DRY RUN] {subject}"
     else:
-        to = parse_recipients("CHECKLIST_RECIPIENTS")
-        cc = parse_recipients("CHECKLIST_CC")
-        if not to:
-            _send_alert("no recipients", ["CHECKLIST_RECIPIENTS is empty in the secret.",
-                                          "Live run refused to send."])
-            raise SystemExit("CHECKLIST_RECIPIENTS is empty — refusing a live send.")
+        to, cc = _live_recipients(report)
     if not to:
         raise SystemExit("No recipients (ALERT_RECIPIENTS / TEST_RECIPIENT empty).")
 
