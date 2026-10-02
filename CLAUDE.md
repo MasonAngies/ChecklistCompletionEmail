@@ -39,7 +39,16 @@ removing it is a two-sided change: edit there AND redeploy that app.
   check what it will do with `modal run modal_app.py::show_config`.
 - **The domain allowlist is the last guard before a real send.** Don't loosen it
   to make one odd address work; fix the address in the directory instead.
-- **Opening compliance is genuinely low** (~9–10 of 26 stores a day in Sept 2026);
+- **Opening compliance is genuinely low** (~36% of store-days in Sept 2026);
   that is the data, not a bug.
+- **`checklist_completion.completed` is nullable** — NULL means the app was
+  unreadable, not that the store missed it. Query misses with `completed IS
+  FALSE`. The upsert's COALESCE stops a NULL erasing a recorded yes; don't
+  "simplify" it away.
+- **The database write must never fail the send.** `src/history.py` swallows
+  everything and prints; keep it that way.
+- **This repo owns `checklist_*` only.** `stores` belongs to the punch report,
+  and `store_number` here is a soft key — no foreign key, so a store that is in
+  the Kintone directory but not in `stores` cannot fail the morning write.
 - After any code change: `./.venv/bin/modal deploy modal_app.py`, then
   `./.venv/bin/modal run modal_app.py::test_dry_run`.

@@ -30,7 +30,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src import email_body  # noqa: E402
+from src import email_body, history  # noqa: E402
 from src.checklists import az_today, build_report, build_roster  # noqa: E402
 from src.graph_mailer import parse_recipients, send_email  # noqa: E402
 
@@ -127,6 +127,7 @@ def run(
     send: bool = True,
     out_dir: str = "",
     to_override: Optional[list] = None,
+    backfill: bool = False,
 ) -> str:
     """Build and send one day's report. Returns a one-line summary.
 
@@ -165,6 +166,7 @@ def run(
                      "The report still went out with those columns marked n/a."])
 
     if not send:
+        history.record(report, "built", dry_run=dry_run, backfill=backfill)
         print(f"Done. {summary} (not sent)")
         return summary
 
@@ -184,10 +186,15 @@ def run(
         send_email(subject=subject, html_body=html, to=to, cc=cc or None,
                    inline_images=[(email_body.LOGO_CID, LOGO.read_bytes())])
     except Exception as exc:
+        # Recorded before re-raising: the grading is just as true for a morning
+        # whose email bounced, and that is exactly the morning someone will ask
+        # about later.
+        history.record(report, "send_failed", to, cc, dry_run, backfill)
         _send_alert("send failed", [f"Business date {business_date}",
                                     f"{type(exc).__name__}: {exc}"])
         raise
     print(f"  sent to {', '.join(to)}" + (f" (cc {', '.join(cc)})" if cc else ""))
+    history.record(report, "sent", to, cc, dry_run, backfill)
     print(f"Done. {summary}")
     return summary
 

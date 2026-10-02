@@ -152,6 +152,14 @@ class Report:
     cleaning_week: Optional[Tuple[date, date]] = None
     cleaning: Dict[str, float] = dc_field(default_factory=dict)  # store -> 0..1
     cleaning_ok: bool = True
+    # The email needs none of what follows; the database does. Same grain as
+    # `done`: (store number, column key) -> how many matching submissions, and
+    # the earliest of them (UTC), which is what "did they do it before the rush"
+    # is answered from later.
+    detail: Dict[Tuple[str, str], Tuple[int, Optional[datetime]]] = \
+        dc_field(default_factory=dict)
+    cleaning_filled: Dict[str, int] = dc_field(default_factory=dict)
+    cleaning_total: int = 0      # photo fields on the form that week
 
 
 # --- time helpers --------------------------------------------------------------
@@ -164,6 +172,16 @@ def _utc_iso(d: date) -> str:
     """Midnight Arizona on `d`, as the UTC timestamp Kintone queries expect."""
     start = datetime.combine(d, time.min) - AZ_OFFSET
     return start.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _to_utc(stamp: str) -> Optional[datetime]:
+    """Kintone's created time as an aware UTC datetime, for the database.
+
+    Aware on purpose: these land in TIMESTAMPTZ columns, and a naive value would
+    be read in whatever timezone the session happens to carry.
+    """
+    az = _to_az(stamp)
+    return (az - AZ_OFFSET).replace(tzinfo=timezone.utc) if az else None
 
 
 def _to_az(stamp: str) -> Optional[datetime]:
@@ -354,8 +372,14 @@ def _photo_fields(client: KintoneClient) -> List[str]:
 
 
 def load_cleaning(client: KintoneClient, week: Tuple[date, date],
-                  known: Dict[str, Store]) -> Tuple[Dict[str, float], List[Unmatched]]:
-    """Share of photo fields filled per store for the week (Mon..Sun inclusive)."""
+                  known: Dict[str, Store]) -> Tuple[Dict[str, int], int, List[Unmatched]]:
+    """Photo fields filled per store for the week, and how many there were.
+
+    Returns counts rather than a percentage because the denominator is read off
+    the live form: 32 of 47 and 32 of 50 are different facts, and the database
+    keeps both halves so a task added to the checklist cannot quietly restate
+    last month's numbers.
+    """
     if not CLEANING.app_id or not CLEANING.token:
         raise KintoneApiError("KINTONE_CLEANING_APP_ID / _API_TOKEN not set.")
     photos = _photo_fields(client)
@@ -375,7 +399,7 @@ def load_cleaning(client: KintoneClient, week: Tuple[date, date],
                 unmatched.append(_unmatched(CLEANING, rec))
             continue
         filled.setdefault(number, set()).update(have)
-    return {n: len(codes) / len(photos) for n, codes in filled.items()}, unmatched
+    return ({n: len(codes) for n, codes in filled.items()}, len(photos), unmatched)
 
 
 def _unmatched(src: Source, rec: dict) -> Unmatched:
@@ -401,8 +425,10 @@ def build_report(business_date: date, client: Optional[KintoneClient] = None) ->
 
     failures: List[str] = []
     unmatched: List[Unmatched] = []
-    # (source key, store, shift) seen on the business date.
-    seen: set = set()
+    # (source key, store, shift) -> submission times (UTC) on the business date.
+    # A list rather than a set: two closings filed for one store is a fact the
+    # database keeps, even though the email only asks whether there was one.
+    seen: Dict[Tuple[str, str, str], List[datetime]] = {}
     read_ok: Dict[str, bool] = {}
 
     for src in DAILY_SOURCES:
@@ -421,10 +447,14 @@ def build_report(business_date: date, client: Optional[KintoneClient] = None) ->
                 unmatched.append(_unmatched(src, rec))
                 continue
             matched += 1
-            seen.add((src.key, number, _shift(src, rec) if src.shift_code else ""))
+            slot = (src.key, number, _shift(src, rec) if src.shift_code else "")
+            # The time may be None if Kintone ever hands back something
+            # unparseable; the submission still counts, it just has no clock.
+            seen.setdefault(slot, []).append(_to_utc(text(rec, _F_CREATED)))
         print(f"  {src.label:<22} {len(records):>4} records, {matched} matched to a store")
 
     done: Dict[Tuple[str, str], Optional[bool]] = {}
+    detail: Dict[Tuple[str, str], Tuple[int, Optional[datetime]]] = {}
     columns_ok: Dict[str, bool] = {}
     for key, _header, sources, shift in COLUMNS:
         # Opening counts either app, so it stays gradeable if just one is down.
@@ -434,21 +464,28 @@ def build_report(business_date: date, client: Optional[KintoneClient] = None) ->
         for store in stores:
             if not ok:
                 done[(store.number, key)] = None
+                detail[(store.number, key)] = (0, None)
                 continue
-            done[(store.number, key)] = any(
-                (s.key, store.number, shift) in seen for s in ok_sources
-            )
+            times = [t for s in ok_sources
+                     for t in seen.get((s.key, store.number, shift), [])]
+            clock = [t for t in times if t]
+            done[(store.number, key)] = bool(times)
+            detail[(store.number, key)] = (len(times), min(clock) if clock else None)
 
-    report = Report(business_date, stores, done, columns_ok, unmatched, failures)
+    report = Report(business_date, stores, done, columns_ok, unmatched, failures,
+                    detail=detail)
 
     week = cleaning_week_for(business_date)
     if week:
         report.cleaning_week = week
         try:
-            report.cleaning, clean_unmatched = load_cleaning(client, week, known)
+            filled, total, clean_unmatched = load_cleaning(client, week, known)
+            report.cleaning_filled = filled
+            report.cleaning_total = total
+            report.cleaning = {n: c / total for n, c in filled.items()}
             report.unmatched.extend(clean_unmatched)
             print(f"  {CLEANING.label:<22} week {week[0]}..{week[1]}, "
-                  f"{len(report.cleaning)} stores submitted")
+                  f"{len(filled)} stores submitted, {total} photo tasks on the form")
         except Exception as exc:  # noqa: BLE001
             report.cleaning_ok = False
             failures.append(f"{CLEANING.label}: {type(exc).__name__}: {exc}")

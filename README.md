@@ -51,6 +51,36 @@ at all.
 Check the current list any time with
 `./.venv/bin/modal run modal_app.py::show_config` — it sends nothing.
 
+## What it records
+
+Every run writes to Supabase as part of the chain, because Kintone mutates — a
+store can tick last Tuesday's boxes today, and re-querying then says Tuesday was
+fine. This repo owns `checklist_*` and nothing else:
+
+| Table | Grain | Holds |
+|---|---|---|
+| `checklist_completion` | business date × store × checklist | done/missed, how many submissions, the earliest one |
+| `checklist_cleaning_week` | Mon–Sun week × store | photos filled, photos on the form, pct, passed |
+| `checklist_run` | one row per execution | status, totals, who it went to, any app that failed |
+
+Re-running a date updates its rows rather than appending, so one row answers
+"did 11104 close on the 29th". `completed` is **nullable**: `NULL` means the
+Kintone app was unreadable that run, which is not the same as a miss — count
+misses with `completed IS FALSE`, never `NOT completed`. A NULL can never
+overwrite an answer already recorded.
+
+Create the tables (idempotent): `./.venv/bin/python scripts/init_db.py`
+
+Backfill past days — sends nothing:
+
+```
+./.venv/bin/python scripts/backfill.py                      # last 30 days
+./.venv/bin/python scripts/backfill.py 2026-09-01 2026-09-30
+```
+
+Backfilled rows are what Kintone says *today* about those days, not what the DMs
+were shown that morning; `checklist_run.backfill` tells the two apart.
+
 ## Running it
 
 ```
